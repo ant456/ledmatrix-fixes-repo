@@ -1,0 +1,14 @@
+[Unit]
+Description=Pixlet Config Editor - standalone web UI
+After=network.target
+
+[Service]
+Type=simple
+User=ledpi
+WorkingDirectory=/home/ledpi/pixlet-editor-app
+ExecStart=/usr/bin/python3 /home/ledpi/pixlet-editor-app/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

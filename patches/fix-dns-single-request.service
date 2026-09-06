@@ -1,0 +1,12 @@
+[Unit]
+Description=Ensure DNS single-request option is set (fixes slow A/AAAA lookups)
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'grep -q "options single-request" /etc/resolv.conf || echo "options single-request" >> /etc/resolv.conf'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

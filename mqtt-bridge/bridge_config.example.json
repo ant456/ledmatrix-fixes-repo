@@ -1,0 +1,9 @@
+{
+  "mqtt_host": "192.168.0.36",
+  "mqtt_port": 1883,
+  "mqtt_username": "ant456",
+  "mqtt_password": "REPLACE_WITH_YOUR_ACTUAL_MQTT_PASSWORD",
+  "mqtt_client_id": "ledmatrix-mqtt-bridge",
+  "mqtt_topic": "ledmatrix/command",
+  "ledmatrix_api_base": "http://localhost:5000"
+}

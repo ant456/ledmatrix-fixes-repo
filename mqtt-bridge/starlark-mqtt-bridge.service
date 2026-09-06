@@ -1,0 +1,14 @@
+[Unit]
+Description=Starlark Apps MQTT Bridge - HA control over MQTT
+After=network.target
+
+[Service]
+Type=simple
+User=ledpi
+WorkingDirectory=/home/ledpi/starlark-mqtt-bridge
+ExecStart=/usr/bin/python3 /home/ledpi/starlark-mqtt-bridge/starlark_mqtt_bridge.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
