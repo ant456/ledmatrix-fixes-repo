@@ -14,7 +14,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LEDMATRIX_DIR="$HOME/LEDMatrix"
+
+# If invoked with sudo, $HOME resolves to /root instead of the real user's
+# home directory. Resolve the actual invoking user's home so we don't go
+# looking for (or installing) LEDMatrix under /root by mistake.
+if [ -n "$SUDO_USER" ]; then
+    REAL_HOME="$(eval echo "~$SUDO_USER")"
+else
+    REAL_HOME="$HOME"
+fi
+LEDMATRIX_DIR="$REAL_HOME/LEDMatrix"
 STARLARK_APPS_DIR="$LEDMATRIX_DIR/plugin-repos/starlark-apps"
 LEDMATRIX_REPO="https://github.com/ChuckBuilds/LEDMatrix.git"
 
@@ -39,6 +48,10 @@ if [ ! -d "$STARLARK_APPS_DIR" ]; then
     mkdir -p "$LEDMATRIX_DIR/plugin-repos"
     cp -r "$TMP_DIR/plugin-repos/starlark-apps" "$STARLARK_APPS_DIR"
     rm -rf "$TMP_DIR"
+
+    if [ -n "$SUDO_USER" ]; then
+        chown -R "$SUDO_USER:$SUDO_USER" "$STARLARK_APPS_DIR"
+    fi
 
     echo "starlark-apps plugin installed to $STARLARK_APPS_DIR"
 fi
