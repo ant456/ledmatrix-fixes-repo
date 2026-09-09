@@ -194,6 +194,15 @@ class StarlarkAppsPlugin(BasePlugin):
     Each installed app becomes a dynamic display mode.
     """
 
+    #: Starlark apps are animations: a .webp render carries per-frame delays
+    #: and _display_frame advances at most one frame per call. The controller
+    #: reads this attribute to decide whether a mode needs its high-FPS loop;
+    #: without it display() was called once per rotation slot, so a multi-frame
+    #: app showed a single frame and never moved. static-image is force-run at
+    #: high FPS for the same reason (GIFs), but that plugin is special-cased by
+    #: name in the controller and this one has to declare it.
+    enable_scrolling = True
+
     def __init__(self, plugin_id: str, config: Dict[str, Any],
                  display_manager, cache_manager, plugin_manager):
         """Initialize the Starlark Apps plugin."""
@@ -216,15 +225,6 @@ class StarlarkAppsPlugin(BasePlugin):
         # Display state
         self.current_app: Optional[StarlarkApp] = None
         self.last_update_check = 0
-
-        # Without this, display_controller calls display() at a low, non-
-        # animated cadence regardless of each frame's actual delay_ms —
-        # confirmed missing entirely in this plugin (2026-08-27), same gap
-        # found and fixed in sleeper-fantasy earlier tonight. This is what
-        # lets multi-frame animated apps (scrolling tickers, spinners, etc.)
-        # actually play at their intended speed instead of stepping frames
-        # far slower than default_frame_delay would suggest.
-        self.enable_scrolling = True
 
         # Check Pixlet availability
         if not self.pixlet.is_available():
@@ -690,49 +690,62 @@ class StarlarkAppsPlugin(BasePlugin):
                 if app.is_enabled() and app.should_render(current_time):
                     self._render_app(app, force=False)
 
-    def display(self, display_mode: str = None, force_clear: bool = False) -> None:
+    def display(self, display_mode: Optional[str] = None, force_clear: bool = False) -> bool:
         """
         Display current Starlark app.
 
         This method is called during the display rotation.
         Displays frames from the currently active app.
+
+        `display_mode` names the app to show when it matches an installed
+        app_id. The controller passes the mode it is rotating to and inspects
+        this signature to decide whether to, so accepting it is what lets a
+        specific app be addressed -- including by an on-demand request pinned
+        to one app. Anything else (the plugin id itself, when the plugin
+        exposes no per-app modes) falls through to normal rotation.
+
+        Returns False when there is no app to show -- which is the state of
+        every install without Pixlet, and of a fresh one before any app is
+        added. The display controller only skips a mode on a boolean False
+        (it checks isinstance(result, bool)), so returning None held a black
+        panel for the full display_duration instead of rotating on.
         """
         try:
             if force_clear:
                 self.display_manager.clear()
 
-            # If the framework requested a specific mode (matching one of
-            # this plugin's exposed modes, i.e. an app_id), switch straight
-            # to that app. Without this, display_mode was accepted nowhere
-            # at all (the method didn't even have the parameter) — the
-            # plugin always just kept showing whatever app got selected the
-            # very first time current_app was set, since _select_next_app()
-            # only ever ran when current_app was still None. Confirmed on
-            # real hardware (2026-08-27): display_controller was correctly
-            # switching modes the whole time, this plugin just never
-            # actually acted on it.
             if display_mode and display_mode in self.apps:
                 self.current_app = self.apps[display_mode]
-            elif not self.current_app:
+            elif force_clear or not self.current_app:
+                # Advance on entry to the mode. _select_next_app only ran when
+                # current_app was unset, so the first enabled app was picked
+                # once and then shown forever -- every other installed app was
+                # rendered on schedule and never displayed. force_clear is the
+                # controller's "we just switched to you" signal (it is reset
+                # immediately after this call), so one app gets each turn.
                 self._select_next_app()
 
             if not self.current_app:
                 # No apps available
                 self.logger.debug("No Starlark apps to display")
-                return
+                return False
 
             # Render app if needed
             if not self.current_app.frames:
                 success = self._render_app(self.current_app, force=True)
                 if not success:
                     self.logger.error(f"Failed to render app: {self.current_app.app_id}")
-                    return
+                    return False
 
-            # Display current frame
-            self._display_frame()
+            # Display current frame. The result is propagated: a failed frame
+            # update is not a displayed frame, and returning True regardless
+            # told the controller the mode had rendered, so it held the dead
+            # frame for the whole display_duration instead of rotating on.
+            return self._display_frame()
 
         except Exception as e:
             self.logger.error(f"Error displaying Starlark app: {e}")
+            return False
 
     def _select_next_app(self) -> None:
         """Select the next enabled app for display."""
@@ -783,15 +796,25 @@ class StarlarkAppsPlugin(BasePlugin):
             magnify = self._get_effective_magnify()
             self.logger.debug(f"Using magnify={magnify} for {app.app_id}")
 
-            # Filter out LEDMatrix-internal timing keys before passing to pixlet
-            INTERNAL_KEYS = {'render_interval', 'display_duration'}
+            # Optional native render size for an app whose own declared canvas
+            # differs from Pixlet's 64x32 default -- without this an app
+            # declaring a wider native canvas got half its own content
+            # clipped at render time, before magnify ever got a chance to
+            # scale anything.
+            render_width = app.config.get("render_width")
+            render_height = app.config.get("render_height")
+
+            # Filter out LEDMatrix-internal timing/sizing keys before passing to pixlet
+            INTERNAL_KEYS = {'render_interval', 'display_duration', 'render_width', 'render_height'}
             pixlet_config = {k: v for k, v in app.config.items() if k not in INTERNAL_KEYS}
 
             success, error = self.pixlet.render(
                 star_file=str(app.star_file),
                 output_path=str(app.cache_file),
                 config=pixlet_config,
-                magnify=magnify
+                magnify=magnify,
+                width=render_width,
+                height=render_height
             )
 
             if not success:
@@ -855,10 +878,13 @@ class StarlarkAppsPlugin(BasePlugin):
             self.logger.error(f"Error loading frames for {app.app_id}: {e}")
             return False
 
-    def _display_frame(self) -> None:
-        """Display the current frame of the current app."""
+    def _display_frame(self) -> bool:
+        """Display the current frame of the current app.
+
+        :returns: whether a frame actually reached the display manager.
+        """
         if not self.current_app or not self.current_app.frames:
-            return
+            return False
 
         try:
             current_time = time.time()
@@ -876,8 +902,11 @@ class StarlarkAppsPlugin(BasePlugin):
                 )
                 self.current_app.last_frame_time = current_time
 
+            return True
+
         except Exception as e:
             self.logger.error(f"Error displaying frame: {e}")
+            return False
 
     def install_app(self, app_id: str, star_file_path: str, metadata: Optional[Dict[str, Any]] = None, assets_dir: Optional[str] = None) -> bool:
         """
